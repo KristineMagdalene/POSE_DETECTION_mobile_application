@@ -1,0 +1,144 @@
+import cv2
+import mediapipe as mp
+import numpy as np
+from moviepy.editor import VideoFileClip
+from sklearn.metrics import mean_squared_error
+import time
+
+# Initialize Mediapipe Pose and Drawing utilities
+mp_drawing = mp.solutions.drawing_utils
+mp_pose = mp.solutions.pose
+
+# Define a standard resolution for all videos
+STANDARD_WIDTH = 640
+STANDARD_HEIGHT = 360
+
+# Load the first video file and determine its duration
+video_path_1 = "jotafull.mp4"
+clip_1 = VideoFileClip(video_path_1)
+duration_1 = clip_1.duration  # in seconds
+
+
+def calculate_angle(a, b, c):
+    a = np.array(a)  # First
+    b = np.array(b)  # Mid
+    c = np.array(c)  # End
+    radians = np.arctan2(c[1] - b[1], c[0] - b[0]) - np.arctan2(a[1] - b[1], a[0] - b[0])
+    angle = np.abs(radians * 180.0 / np.pi)
+    if angle > 180.0:
+        angle = 360 - angle
+    return angle
+
+# Curl counter variables
+counter = 0
+stage = None
+pose_data_video_1 = []  # To store pose data for the first video
+pose_data_video_2 = []  # To store pose data for the video captured
+
+# Initialize Mediapipe Pose instance
+pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+
+def process_frame(frame, video_num):
+    global counter, stage, pose, pose_data_video_1, pose_data_video_2
+
+    # Resize frame to the standard resolution of 360x640
+    image_resized = cv2.resize(frame, (STANDARD_WIDTH, STANDARD_HEIGHT))
+
+    # Recolor image to RGB for mediapipe
+    image_rgb = cv2.cvtColor(image_resized, cv2.COLOR_BGR2RGB)
+    image_rgb.flags.writeable = False
+
+    # Process image to detect pose
+    results = pose.process(image_rgb)
+
+    # Extract landmarks and process them
+    if results.pose_landmarks:
+        landmarks = results.pose_landmarks.landmark
+        shoulder = [landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].x,
+                    landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y]
+        elbow = [landmarks[mp_pose.PoseLandmark.LEFT_ELBOW.value].x,
+                 landmarks[mp_pose.PoseLandmark.LEFT_ELBOW.value].y]
+        wrist = [landmarks[mp_pose.PoseLandmark.LEFT_WRIST.value].x,
+                 landmarks[mp_pose.PoseLandmark.LEFT_WRIST.value].y]
+
+        # Calculate angle
+        angle = calculate_angle(shoulder, elbow, wrist)
+
+        # Store pose data (angle) in the respective list
+        if video_num == 1:
+            pose_data_video_1.append(angle)
+        elif video_num == 2:
+            pose_data_video_2.append(angle)
+
+        # Curl counter logic
+        if angle > 160:
+            stage = "down"
+        if angle < 30 and stage == 'down':
+            stage = "up"
+            counter += 1
+
+        # Draw the pose landmarks on the image
+        mp_drawing.draw_landmarks(image_resized, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+
+    return image_resized  # Return processed frame for display
+
+# Apply the process_frame function to each frame for the first video
+clip_1.fl_image(lambda frame: process_frame(frame, video_num=1)).preview()
+
+# Set up video capture
+cap = cv2.VideoCapture(0)  # Open the default camera
+start_time = time.time()  # Start the timer for recording
+elapsed_time = 0
+
+# Start capturing and processing frames
+while (cap.isOpened() and elapsed_time < duration_1):
+    ret, frame = cap.read()
+    if ret:
+        # Process the captured frame and resize it to match the first video
+        processed_frame = process_frame(frame, video_num=2)
+
+        # Display the camera feed at 360x640 resolution
+        cv2.imshow('Camera Recording (360x640)', processed_frame)
+
+        # Check if 'q' is pressed to quit manually
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+        # Update elapsed time
+        elapsed_time = time.time() - start_time
+    else:
+        break
+
+cap.release()
+cv2.destroyAllWindows()
+
+# Function to calculate the similarity score between the two videos
+def calculate_similarity(pose_data_video_1, pose_data_video_2):
+    # Ensure both videos have data and have the same number of frames to compare
+    min_len = min(len(pose_data_video_1), len(pose_data_video_2))
+    if min_len == 0:
+        return "No data available to calculate similarity"
+    pose_data_video_1 = pose_data_video_1[:min_len]
+    pose_data_video_2 = pose_data_video_2[:min_len]
+
+    # Calculate the mean squared error between the angles of the two videos
+    mse = mean_squared_error(pose_data_video_1, pose_data_video_2)
+    return mse
+
+# Function to score the performance
+def score_performance(mse):
+    if mse < 2222:
+        return "Good"
+    elif mse < 4444:
+        return "Average"
+    else:
+        return "Poor"
+
+# After both videos are processed, calculate the similarity score
+mse = calculate_similarity(pose_data_video_1, pose_data_video_2)
+if isinstance(mse, str):
+    print(mse)
+else:
+    performance_score = score_performance(mse)
+    print(f"Pose similarity score (MSE): {mse}")
+    print(f"Performance score: {performance_score}")
